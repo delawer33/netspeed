@@ -86,6 +86,7 @@ HTTP — `urllib` из стандартной библиотеки, чтобы �
 ```bash
 uv run pytest
 uv run ruff check . && uv run mypy
+uv run pre-commit install   # те же проверки и gitleaks перед каждым коммитом
 ```
 
 Тесты поднимают локальный HTTP-сервер с маршрутами под каждый сценарий: тело,
