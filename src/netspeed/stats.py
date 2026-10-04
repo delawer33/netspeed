@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from netspeed.measure import Sample
-
-MEGABYTE = 1_000_000  # десятичный мегабайт, как у провайдеров и speedtest-сервисов
+from netspeed.measure import MEGABYTE, Sample
 
 
 @dataclass(frozen=True)
@@ -19,6 +17,10 @@ class Summary:
     @property
     def mean_seconds(self) -> float:
         return self.total_seconds / self.requests
+
+    @property
+    def mean_bytes(self) -> float:
+        return self.total_bytes / self.requests
 
     @property
     def megabytes_per_second(self) -> float:
@@ -39,6 +41,6 @@ def summarize(samples: Sequence[Sample]) -> Summary:
         raise ValueError("нет успешных замеров")
     return Summary(
         requests=len(samples),
-        total_bytes=sum(s.bytes for s in samples),
-        total_seconds=sum(s.seconds for s in samples),
+        total_bytes=sum(x.body_bytes for x in samples),
+        total_seconds=sum(x.seconds for x in samples),
     )

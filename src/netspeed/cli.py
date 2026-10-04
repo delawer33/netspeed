@@ -1,16 +1,18 @@
-"""Точка входа: ``netspeed URL [-n 10] [--timeout 30]``."""
+"""Точка входа: ``netspeed URL [-n 10] [--timeout 60]``."""
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from collections.abc import Sequence
 
-from netspeed.measure import FetchError, Sample, fetch
-from netspeed.stats import MEGABYTE, summarize
+from netspeed.measure import MEGABYTE, FetchError, Sample, fetch
+from netspeed.stats import summarize
 
 DEFAULT_REQUESTS = 10
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 60.0
+EXIT_OK, EXIT_PARTIAL, EXIT_NO_DATA = 0, 1, 2
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -30,14 +32,26 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--timeout",
         type=float,
         default=DEFAULT_TIMEOUT,
-        help=f"таймаут сокета на запрос, с (по умолчанию {DEFAULT_TIMEOUT:g})",
+        help=f"предел на один запрос, с (по умолчанию {DEFAULT_TIMEOUT:g})",
     )
     args = parser.parse_args(argv)
     if args.requests < 1:
         parser.error("--requests должно быть >= 1")
+    if not (math.isfinite(args.timeout) and args.timeout > 0):
+        parser.error("--timeout должно быть положительным числом")
     if not args.url.startswith(("http://", "https://")):
         parser.error("нужен http:// или https:// адрес")
     return args
+
+
+def _say(line: str = "") -> None:
+    # stdout и stderr идут в одну консоль: без flush строки ошибок обгоняют
+    # строки замеров, когда вывод перенаправлен в файл или pipe.
+    print(line, flush=True)
+
+
+def _complain(line: str) -> None:
+    print(line, file=sys.stderr, flush=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -45,39 +59,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     samples: list[Sample] = []
     failures = 0
 
-    for i in range(1, args.requests + 1):
-        prefix = f"[{i:>2}/{args.requests}]"
-        try:
-            sample = fetch(args.url, timeout=args.timeout)
-        except FetchError as exc:
-            failures += 1
-            print(f"{prefix} ошибка: {exc}", file=sys.stderr)
-            continue
-        samples.append(sample)
-        rate = sample.bytes / sample.seconds / MEGABYTE
-        print(
-            f"{prefix} {sample.bytes / MEGABYTE:8.2f} МБ  {sample.seconds:7.3f} с  {rate:8.2f} МБ/с"
-        )
+    try:
+        for i in range(1, args.requests + 1):
+            prefix = f"[{i:>2}/{args.requests}]"
+            try:
+                sample = fetch(args.url, timeout=args.timeout)
+            except FetchError as exc:
+                failures += 1
+                _complain(f"{prefix} ошибка: {exc}")
+                continue
+            samples.append(sample)
+            _say(
+                f"{prefix} {sample.body_bytes / MEGABYTE:8.2f} МБ  "
+                f"{sample.seconds:7.3f} с  {sample.megabytes_per_second:8.2f} МБ/с"
+            )
+    except KeyboardInterrupt:
+        _complain("Прервано — итог по уже скачанному.")
 
     if not samples:
-        print("Ни одного успешного запроса — скорость не посчитать.", file=sys.stderr)
-        return 2
+        _complain("Ни одного успешного запроса — скорость не посчитать.")
+        return EXIT_NO_DATA
 
-    s = summarize(samples)
-    print()
-    print(f"Успешных запросов:  {s.requests} из {args.requests}")
-    print(f"Скачано:            {s.total_bytes / MEGABYTE:.2f} МБ ({s.total_bytes} байт)")
-    print(f"Среднее время:      {s.mean_seconds:.3f} с")
-    mbps = f"{s.megabits_per_second:.1f} Мбит/с"
-    print(f"Скорость:           {s.megabytes_per_second:.2f} МБ/с ({mbps})")
-    if s.total_bytes / s.requests < MEGABYTE:
-        print(
+    summary = summarize(samples)
+    mbps = f"{summary.megabits_per_second:.1f} Мбит/с"
+    _say()
+    _say(f"Успешных запросов:  {summary.requests} из {args.requests}")
+    _say(
+        f"Скачано:            {summary.total_bytes / MEGABYTE:.2f} МБ ({summary.total_bytes} байт)"
+    )
+    _say(f"Среднее время:      {summary.mean_seconds:.3f} с")
+    _say(f"Скорость:           {summary.megabytes_per_second:.2f} МБ/с ({mbps})")
+    if summary.mean_bytes < MEGABYTE:
+        _complain(
             "Внимание: файл меньше 1 МБ — время съедают DNS/TCP/TLS, "
-            "скорость занижена. Возьмите файл потяжелее.",
-            file=sys.stderr,
+            "скорость занижена. Возьмите файл потяжелее."
         )
-    return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return EXIT_PARTIAL if failures or summary.requests < args.requests else EXIT_OK
